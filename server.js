@@ -1,45 +1,37 @@
 const express = require('express');
-const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(express.json());
-app.use(cors({
-  origin: '*', // allow all chrome extensions + AI sites
-  methods: ['POST', 'GET'],
-}));
+// CORS fix — must be FIRST
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  next();
+});
 
-// Rate limiting — 30 requests per IP per minute
+app.use(express.json());
+
 const limiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
-  message: { error: 'Too many requests. Please wait a moment.' }
+  message: { error: 'Too many requests. Wait a moment.' }
 });
 app.use('/improve', limiter);
 
-// Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'PromptPilot backend is live ✦', version: '1.0.0' });
+  res.json({ status: 'PromptPilot backend is live', version: '1.0.0' });
 });
 
-// POST /improve — main endpoint
 app.post('/improve', async (req, res) => {
   const { prompt } = req.body;
-
-  if (!prompt || typeof prompt !== 'string') {
-    return res.status(400).json({ error: 'prompt is required' });
-  }
-  if (prompt.trim().length < 3) {
-    return res.status(400).json({ error: 'Prompt too short' });
-  }
-  if (prompt.length > 4000) {
-    return res.status(400).json({ error: 'Prompt too long (max 4000 chars)' });
-  }
-
+  if (!prompt || typeof prompt !== 'string') return res.status(400).json({ error: 'prompt is required' });
+  if (prompt.trim().length < 3) return res.status(400).json({ error: 'Prompt too short' });
+  if (prompt.length > 4000) return res.status(400).json({ error: 'Prompt too long' });
   try {
     const improved = await callGemini(prompt.trim());
     return res.json({ success: true, improved });
@@ -49,10 +41,9 @@ app.post('/improve', async (req, res) => {
   }
 });
 
-// Call Gemini with YOUR server-side key
 async function callGemini(originalPrompt) {
   const GEMINI_KEY = process.env.GEMINI_API_KEY;
-  if (!GEMINI_KEY) throw new Error('Server not configured. Contact support.');
+  if (!GEMINI_KEY) throw new Error('Server not configured');
 
   const systemPrompt = `You are an expert prompt engineer. Improve the following prompt to be clearer, more specific, and more likely to get an excellent AI response.
 
@@ -60,9 +51,9 @@ Rules:
 - Keep the same intent and goal
 - Make it more specific and detailed
 - Add context if helpful
-- Use clear structure if the prompt is complex
-- Do NOT over-engineer simple prompts — keep them natural
-- Return ONLY the improved prompt, nothing else. No explanations, no preamble.
+- Use clear structure if complex
+- Do NOT over-engineer simple prompts
+- Return ONLY the improved prompt, nothing else.
 
 Original prompt:
 ${originalPrompt}`;
@@ -91,6 +82,4 @@ ${originalPrompt}`;
   return text.trim();
 }
 
-app.listen(PORT, () => {
-  console.log(`✦ PromptPilot backend running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`PromptPilot backend running on port ${PORT}`));
