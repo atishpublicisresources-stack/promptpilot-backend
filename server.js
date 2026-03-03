@@ -1,9 +1,9 @@
-// PromptPilot Backend v2 - OpenAI GPT-4o-mini + usage limits
+// PromptPilot Backend v2 - Gemini 1.5 Flash + usage limits
 const http = require("http");
 const https = require("https");
 
 const PORT = process.env.PORT || 3000;
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const FREE_DAILY_LIMIT = 10;
 const usageMap = new Map();
 
@@ -27,26 +27,24 @@ function checkUsage(ip, licenseKey) {
   return { allowed: true, used: count + 1, limit: FREE_DAILY_LIMIT };
 }
 
-function callOpenAI(prompt) {
+function callGemini(prompt) {
   return new Promise((resolve, reject) => {
-    if (!OPENAI_KEY) return reject(new Error("Server not configured. Contact support."));
+    if (!GEMINI_KEY) return reject(new Error("Server not configured. Contact support."));
 
     const msg = "You are an expert prompt engineer. Improve the following prompt to be clearer, more specific, and more likely to get an excellent AI response.\n\nRules:\n- Keep the same intent and goal\n- Make it more specific and detailed\n- Add helpful context where missing\n- Use clear structure if the prompt is complex\n- Do NOT over-engineer simple prompts\n- Return ONLY the improved prompt. No preamble, no explanation.\n\nOriginal prompt:\n" + prompt;
 
     const body = JSON.stringify({
-      model: "gpt-4o-mini",
-      max_tokens: 1024,
-      messages: [{ role: "user", content: msg }]
+      contents: [{ parts: [{ text: msg }] }],
+      generationConfig: { maxOutputTokens: 1024, temperature: 0.7 }
     });
 
     const req = https.request({
-      hostname: "api.openai.com",
-      path: "/v1/chat/completions",
+      hostname: "generativelanguage.googleapis.com",
+      path: "/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_KEY,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-        "Authorization": "Bearer " + OPENAI_KEY
+        "Content-Length": Buffer.byteLength(body)
       }
     }, (res) => {
       let d = "";
@@ -55,9 +53,8 @@ function callOpenAI(prompt) {
         try {
           const p = JSON.parse(d);
           if (res.statusCode === 429) return reject(new Error("Server busy. Try again."));
-          if (res.statusCode === 401) return reject(new Error("Server configuration error."));
           if (res.statusCode !== 200) return reject(new Error((p.error && p.error.message) || "API error"));
-          const text = p.choices && p.choices[0] && p.choices[0].message && p.choices[0].message.content;
+          const text = p.candidates && p.candidates[0] && p.candidates[0].content && p.candidates[0].content.parts && p.candidates[0].content.parts[0] && p.candidates[0].content.parts[0].text;
           if (!text) return reject(new Error("Empty response"));
           resolve(text.trim());
         } catch (e) { reject(new Error("Parse error")); }
@@ -101,7 +98,7 @@ http.createServer(async (req, res) => {
             upgrade: true
           }));
         }
-        const improved = await callOpenAI(prompt.trim());
+        const improved = await callGemini(prompt.trim());
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, improved, usage: u }));
       } catch (err) {
