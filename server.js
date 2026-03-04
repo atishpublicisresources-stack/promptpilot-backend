@@ -27,7 +27,7 @@ function checkUsage(ip, licenseKey) {
   return { allowed: true, used: count + 1, limit: FREE_DAILY_LIMIT };
 }
 
-function callGemini(prompt) {
+function callGemini(prompt, retries = 2) {
   return new Promise((resolve, reject) => {
     if (!GEMINI_KEY) return reject(new Error("Server not configured. Contact support."));
 
@@ -52,7 +52,14 @@ function callGemini(prompt) {
       res.on("end", () => {
         try {
           const p = JSON.parse(d);
-          if (res.statusCode === 429) return reject(new Error("Server busy. Try again."));
+          if (res.statusCode === 429) {
+            if (retries > 0) {
+              setTimeout(() => callGemini(prompt, retries - 1).then(resolve).catch(reject), 2000);
+            } else {
+              reject(new Error("Server busy. Try again in a moment."));
+            }
+            return;
+          }
           if (res.statusCode !== 200) return reject(new Error((p.error && p.error.message) || "API error"));
           const text = p.candidates && p.candidates[0] && p.candidates[0].content && p.candidates[0].content.parts && p.candidates[0].content.parts[0] && p.candidates[0].content.parts[0].text;
           if (!text) return reject(new Error("Empty response"));
