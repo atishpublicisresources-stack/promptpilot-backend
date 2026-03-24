@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 const GROQ_KEY = process.env.GROQ_API_KEY;
 const DODO_KEY = process.env.DODO_PAYMENTS_API_KEY;
 const DODO_WEBHOOK_SECRET = process.env.DODO_PAYMENTS_WEBHOOK_SECRET;
-const DODO_PRODUCT_ID = "PASTE_YOUR_PRODUCT_ID_HERE"; // ← from Dodo Dashboard → Products
+const DODO_PRODUCT_ID = "pdt_0NZtEihugUgRG2kUCRtXW"; // ← from Dodo Dashboard → Products
 const FREE_DAILY_LIMIT = 10;
 
 const usageMap = new Map();
