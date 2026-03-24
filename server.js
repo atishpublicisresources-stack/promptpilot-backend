@@ -1,16 +1,33 @@
-// PromptPilot Backend v3.1 - Groq API + Dodo Payments
+// PromptPilot Backend v3.2 - Groq API + Dodo Payments + File-based Pro storage
 const http = require("http");
 const https = require("https");
+const fs = require("fs");
+const path = require("path");
 
 const PORT = process.env.PORT || 3000;
 const GROQ_KEY = process.env.GROQ_API_KEY;
 const DODO_KEY = process.env.DODO_PAYMENTS_API_KEY;
-const DODO_WEBHOOK_SECRET = process.env.DODO_PAYMENTS_WEBHOOK_SECRET;
-const DODO_PRODUCT_ID = "pdt_0NZtEihugUgRG2kUCRtXW"; // ← from Dodo Dashboard → Products
+const DODO_PRODUCT_ID = "pdt_0NZtEihugUgRG2kUCRtXW";
 const FREE_DAILY_LIMIT = 10;
+const PRO_FILE = path.join(__dirname, "pro_users.json");
 
 const usageMap = new Map();
-const proUsers = new Set(); // email → pro status (use a DB in production)
+
+// ── Pro users: file-backed so restarts don't wipe them ──────────────────────
+function loadProUsers() {
+  try {
+    if (fs.existsSync(PRO_FILE)) {
+      return new Set(JSON.parse(fs.readFileSync(PRO_FILE, "utf8")));
+    }
+  } catch (e) { console.error("Load pro users error:", e.message); }
+  return new Set();
+}
+function saveProUsers(set) {
+  try { fs.writeFileSync(PRO_FILE, JSON.stringify([...set])); }
+  catch (e) { console.error("Save pro users error:", e.message); }
+}
+const proUsers = loadProUsers();
+console.log(`Loaded ${proUsers.size} pro user(s) from disk`);
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -23,8 +40,11 @@ function getIP(req) {
   return ((req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").split(",")[0]).trim();
 }
 
-function checkUsage(ip, lk) {
-  if (lk && lk.length > 10) return { allowed: true, pro: true };
+function checkUsage(ip, email) {
+  // Pro check by email
+  if (email && proUsers.has(email.toLowerCase().trim())) {
+    return { allowed: true, pro: true };
+  }
   const key = ip + "_" + new Date().toISOString().slice(0, 10);
   const count = usageMap.get(key) || 0;
   if (count >= FREE_DAILY_LIMIT) return { allowed: false };
@@ -67,7 +87,6 @@ function callGroq(prompt) {
   });
 }
 
-// Create Dodo Payments checkout session
 function createDodoCheckout(customerEmail) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
@@ -108,16 +127,16 @@ http.createServer(async (req, res) => {
   // ✅ Health check
   if (req.method === "GET" && req.url === "/") {
     res.writeHead(200);
-    return res.end(JSON.stringify({ status: "PromptPilot backend is live", version: "3.1.0" }));
+    return res.end(JSON.stringify({ status: "PromptPilot backend is live", version: "3.2.0", proUsers: proUsers.size }));
   }
 
-  // ✅ Improve prompt (existing)
+  // ✅ Improve prompt — now accepts email for pro check
   if (req.method === "POST" && req.url === "/improve") {
     let b = "";
     req.on("data", c => b += c);
     req.on("end", async () => {
       try {
-        const { prompt, license_key } = JSON.parse(b);
+        const { prompt, email } = JSON.parse(b);
         if (!prompt || typeof prompt !== "string" || prompt.trim().length < 3) {
           res.writeHead(400); return res.end(JSON.stringify({ error: "Valid prompt required" }));
         }
@@ -125,14 +144,17 @@ http.createServer(async (req, res) => {
           res.writeHead(400); return res.end(JSON.stringify({ error: "Prompt too long" }));
         }
         const ip = getIP(req);
-        const u = checkUsage(ip, license_key);
+        const u = checkUsage(ip, email);
         if (!u.allowed) {
           res.writeHead(429);
-          return res.end(JSON.stringify({ error: "Free limit reached (10/day). Upgrade to Pro for unlimited!", upgrade: true }));
+          return res.end(JSON.stringify({
+            error: "Free limit reached (10/day). Upgrade to Pro for unlimited!",
+            upgrade: true
+          }));
         }
         const improved = await callGroq(prompt.trim());
         res.writeHead(200);
-        res.end(JSON.stringify({ success: true, improved, usage: u }));
+        res.end(JSON.stringify({ success: true, improved, usage: u, pro: u.pro || false }));
       } catch (err) {
         console.error("Error:", err.message);
         res.writeHead(500);
@@ -142,7 +164,7 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // 💳 NEW: Create Dodo checkout session
+  // 💳 Create Dodo checkout session
   if (req.method === "POST" && req.url === "/create-checkout") {
     let b = "";
     req.on("data", c => b += c);
@@ -162,7 +184,7 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // 🔔 NEW: Dodo webhook — fires when payment succeeds
+  // 🔔 Dodo webhook — fires when payment succeeds
   if (req.method === "POST" && req.url === "/webhook/dodo") {
     let b = "";
     req.on("data", c => b += c);
@@ -173,14 +195,16 @@ http.createServer(async (req, res) => {
         if (event.type === "subscription.active" || event.type === "payment.succeeded") {
           const email = event.data && event.data.customer && event.data.customer.email;
           if (email) {
-            proUsers.add(email);
+            proUsers.add(email.toLowerCase().trim());
+            saveProUsers(proUsers);
             console.log("✅ Pro user activated:", email);
           }
         }
         if (event.type === "subscription.cancelled" || event.type === "subscription.expired") {
           const email = event.data && event.data.customer && event.data.customer.email;
           if (email) {
-            proUsers.delete(email);
+            proUsers.delete(email.toLowerCase().trim());
+            saveProUsers(proUsers);
             console.log("❌ Pro user removed:", email);
           }
         }
@@ -194,14 +218,14 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // 🔍 NEW: Check if user is pro
+  // 🔍 Check if user is pro
   if (req.method === "POST" && req.url === "/check-pro") {
     let b = "";
     req.on("data", c => b += c);
     req.on("end", () => {
       try {
         const { email } = JSON.parse(b);
-        const isPro = proUsers.has(email);
+        const isPro = email ? proUsers.has(email.toLowerCase().trim()) : false;
         res.writeHead(200);
         res.end(JSON.stringify({ pro: isPro }));
       } catch (err) {
@@ -215,4 +239,4 @@ http.createServer(async (req, res) => {
   res.writeHead(404);
   res.end(JSON.stringify({ error: "Not found" }));
 
-}).listen(PORT, () => console.log("PromptPilot v3.1 running on port " + PORT));
+}).listen(PORT, () => console.log("PromptPilot v3.2 running on port " + PORT));
